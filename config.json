@@ -1,0 +1,22 @@
+{
+  "posX": 17,
+  "posY": -162,
+  "vizOffsetX": -23,
+  "vizOffsetY": 1,
+  "rot": -4,
+  "skew": -4.5,
+  "scale": 1,
+  "barCount": 30,
+  "sensitivity": 1.2,
+  "accentColor": "#05bbfb",
+  "accentGlow": "rgba(5, 187, 251, 0.42)",
+  "accentBadge": "#05bbfb",
+  "spotifyToken": "BQCkPbUO8QiC5uUgHPaOak-083r79uqN2PyO5tjwqt2Il10XZkIN5og6I7_Om_lXY5N97egpcgpkoFsy0wwba4XsJOo9ck3DrthMkPkQ2QgzQq42v08IaQryZUrW5dB2OdwPcbcfi95FVaViS95DCozQOCYWS5ZZkRTZfZonoLJPVryZFmt929RhKHozA3ICamc4nUPyelnW31tBffvkc0ZD1NogZzGuQ9lO9qyFyUIBh528xzPL",
+  "spotifyRefreshToken": "",
+  "spotifyClientId": "88e3882e563d4cd28db99d8e6ef66830",
+  "spotifyPrefix": "CURRENTLY LISTENING TO:",
+  "tickerManualText": "CURRENTLY LISTENING TO: HOUSE MONEY — BABY KEEM",
+  "tickerSpeed": 19,
+  "tickerAutoScroll": false,
+  "audioMode": "sim"
+}

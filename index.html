@@ -1,0 +1,1756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OW2 HUD Add-On: Audio Visualizer & Song Ticker</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google Fonts matching Overwatch's Italicized Geometric Sans (Rajdhani + Teko) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:ital,wght@0,600;0,700;1,600;1,700&family=Teko:wght@600;700&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      /* Exact match to Overwatch 2 "1" Badge Blue & Subtle Glow */
+      --ow-accent: #05bbfb;
+      --ow-accent-glow: rgba(5, 187, 251, 0.42);
+      --ow-accent-badge: #05bbfb;
+      --ow-bg-viz: rgba(14, 19, 31, 0.76);
+      --ow-bg-ticker: rgba(14, 19, 31, 0.80);
+      --ow-text-ticker: #e2ecf5;
+      
+      /* HUD Alignment & Geometry Defaults */
+      --hud-x: 17px;
+      --hud-y: -162px;
+      --hud-rot: -4.0deg;
+      --hud-skew: -4.5deg;
+      --hud-scale: 1.0;
+
+      /* Detached Visualizer Offset Defaults */
+      --viz-offset-x: -23px;
+      --viz-offset-y: 1px;
+
+      --ticker-speed: 8s;
+    }
+
+    * {
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Rajdhani', sans-serif;
+    }
+
+    /* Simulated In-Game Backdrop with subtle ghost guide where native OW2 HUD sits */
+    .bg-game-sim {
+      background: radial-gradient(circle at 25% 75%, #465b7d 0%, #374a67 45%, #243248 100%);
+    }
+
+    /* Pure transparent mode for actual OBS usage */
+    .bg-obs-transparent {
+      background: transparent !important;
+    }
+
+    /* Dynamic Overwatch 2 HUD Anchor with Position, Rotation, Skew & Scale */
+    #hud-addon-anchor {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      transform-origin: bottom left;
+      transform: translate3d(var(--hud-x), var(--hud-y), 0) rotate(var(--hud-rot)) skewX(var(--hud-skew)) scale(var(--hud-scale));
+      will-change: transform;
+    }
+      will-change: transform;
+    }
+
+    /* Dashed Ghost Alignment Guide (Only visible in Preview Mode to show where native OW2 healthbar sits) */
+    .native-hud-ghost {
+      width: 262px;
+      height: 76px;
+      border: 1.5px dashed rgba(214, 228, 240, 0.28);
+      background: rgba(14, 22, 38, 0.22);
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: rgba(214, 228, 240, 0.45);
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+
+    /* Audio Visualizer Outer Slot (260x76px - sits directly right of native OW2 health bar) */
+    .visualizer-slot {
+      position: relative;
+      width: 260px;
+      height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform: translate3d(var(--viz-offset-x), var(--viz-offset-y), 0);
+      will-change: transform;
+    }
+
+    /* Animated Visualizer Box: Top & bottom blue lines start in the middle and pan out vertically */
+    .visualizer-box {
+      position: relative;
+      width: 260px;
+      height: 76px;
+      background: var(--ow-bg-viz);
+      border-top: 2px solid var(--ow-accent);
+      border-bottom: 2px solid var(--ow-accent);
+      border-left: 1px solid rgba(255, 255, 255, 0.10);
+      border-right: 1px solid rgba(255, 255, 255, 0.10);
+      border-radius: 3px;
+      box-shadow: 
+        0 -2px 9px -1px var(--ow-accent-glow),
+        0 2px 9px -1px var(--ow-accent-glow),
+        inset 0 0 22px rgba(5, 187, 251, 0.18);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 8px;
+      overflow: hidden;
+      transition:
+        height 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+        width 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.3s ease,
+        box-shadow 0.45s ease;
+    }
+
+    /* Collapsed Middle-Line State (Top and bottom borders meet in the center before panning out) */
+    .visualizer-box.viz-collapsed {
+      height: 4px !important;
+      box-shadow:
+        0 0 14px 2px var(--ow-accent),
+        inset 0 0 8px var(--ow-accent);
+    }
+
+    /* Initial Boot Horizontal Line Draw before Vertical Pan-Out */
+    .visualizer-box.viz-boot-seed {
+      width: 0px !important;
+      height: 4px !important;
+      opacity: 0;
+      padding-left: 0;
+      padding-right: 0;
+      border-left-width: 0;
+      border-right-width: 0;
+    }
+
+    #visualizer-canvas {
+      width: 244px;
+      height: 64px;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 10;
+      transition: opacity 0.3s ease, transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .visualizer-box.viz-collapsed #visualizer-canvas,
+    .visualizer-box.viz-boot-seed #visualizer-canvas {
+      opacity: 0;
+      transform: scaleY(0.05);
+    }
+
+    /* Deep blue ambient center glow inside visualizer */
+    .visualizer-glow-backdrop {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at center, var(--ow-accent-glow) 0%, transparent 72%);
+      opacity: 0.32;
+      pointer-events: none;
+    }
+
+    /* Subtle center horizontal guide line inside visualizer */
+    .visualizer-centerline {
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      top: 50%;
+      height: 1px;
+      background: rgba(255, 255, 255, 0.16);
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+
+    /* Song Ticker Bar (530x28px - sits directly underneath native OW2 player name + visualizer) */
+    .song-ticker-row {
+      width: 530px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      transition: opacity 0.45s ease, transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .song-ticker-row.ticker-boot-hidden {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+
+    /* Left Music Note Badge - Matches the OW2 "1" Badge (#05bbfb + White Icon + Small Blue Glow) */
+    .ow-badge-music {
+      width: 28px;
+      height: 28px;
+      background: var(--ow-accent-badge);
+      box-shadow:
+        0 0 8px var(--ow-accent-glow),
+        inset 0 0 4px rgba(255, 255, 255, 0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 2px 0 0 2px;
+      flex-shrink: 0;
+    }
+
+    .ow-badge-icon {
+      color: #ffffff;
+      filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.65)) drop-shadow(0 0 6px var(--ow-accent));
+    }
+
+    .ow-ticker-track-box {
+      height: 28px;
+      background: var(--ow-bg-ticker);
+      backdrop-filter: blur(4px);
+      border-top: 1px solid rgba(255, 255, 255, 0.07);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    /* Marquee Animation for Song Ticker:
+       Smooth continuous pixel drift using JS ticker loop for perfectly seamless wrapping without pauses/skips */
+    .ticker-viewport {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .ticker-content {
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+      will-change: transform, opacity;
+      transition: transform 0.38s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.35s ease;
+    }
+
+    /* Cinematic Overwatch Ticker Slide Transitions */
+    .ticker-content.ticker-slide-out {
+      transform: translateX(-40px) !important;
+      opacity: 0 !important;
+    }
+
+    .ticker-content.ticker-slide-prep-in {
+      transform: translateX(50px) !important;
+      opacity: 0 !important;
+      transition: none !important;
+    }
+
+    .ow-ticker-text {
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700;
+      font-style: italic;
+      font-size: 15px;
+      letter-spacing: 0.08em;
+      color: var(--ow-text-ticker);
+      text-transform: uppercase;
+      white-space: nowrap;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+    }
+
+    /* Pulse animation for the right-side audio emblem */
+    @keyframes spinPulse {
+      0% { transform: rotate(0deg) scale(1); }
+      50% { transform: rotate(180deg) scale(1.08); }
+      100% { transform: rotate(360deg) scale(1); }
+    }
+
+    .audio-emblem-spin {
+      animation: spinPulse 5s linear infinite;
+    }
+
+    /* Auto-hide studio controls when in OBS or idle */
+    .ui-fade {
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    body.obs-clean-mode .ui-fade,
+    body.obs-clean-mode #native-ghost-box {
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+
+    /* Custom Scrollbar for Studio Panel */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.6);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(56, 189, 248, 0.4);
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body id="app-body" class="bg-game-sim relative select-none">
+
+  <!-- TOP-LEFT FLOATING BAR (Auto-hides on inactivity or when 'H' is pressed) -->
+  <div id="top-toolbar" class="ui-fade fixed top-4 left-4 z-50 flex flex-wrap items-center gap-2">
+    <div class="flex items-center gap-2 bg-slate-900/90 border border-cyan-500/40 backdrop-blur-md px-3.5 py-2 rounded-xl shadow-lg">
+      <span class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping"></span>
+      <span class="text-xs font-bold tracking-wider uppercase text-cyan-300">OW2 HUD Add-On Overlay</span>
+    </div>
+
+    <button onclick="togglePreviewMode()" class="bg-slate-900/90 hover:bg-slate-800 text-white border border-slate-700 hover:border-cyan-400/60 px-3.5 py-2 rounded-xl text-xs font-bold tracking-wider uppercase transition flex items-center gap-2 shadow-lg">
+      <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+      <span id="preview-mode-label">View: Alignment Guide</span>
+    </button>
+
+    <button onclick="triggerSongChangeAnimation()" class="bg-slate-900/90 hover:bg-slate-800 text-cyan-300 border border-slate-700 hover:border-cyan-400/60 px-3.5 py-2 rounded-xl text-xs font-bold tracking-wider uppercase transition flex items-center gap-2 shadow-lg" title="Test the middle-line pan-out animation">
+      <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <span>Test Pan-Out Anim</span>
+    </button>
+
+    <button onclick="toggleHowToModal(true)" class="bg-slate-900/90 hover:bg-slate-800 text-slate-200 border border-slate-700 hover:border-cyan-400/60 px-3.5 py-2 rounded-xl text-xs font-bold tracking-wider uppercase transition flex items-center gap-2 shadow-lg">
+      <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      <span>How to View & Add to OBS</span>
+    </button>
+
+    <button onclick="toggleDrawer()" class="bg-cyan-500 hover:bg-cyan-400 text-slate-950 px-4 py-2 rounded-xl text-xs font-extrabold tracking-wider uppercase transition flex items-center gap-1.5 shadow-lg shadow-cyan-500/20">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+      <span>Customize & Export</span>
+    </button>
+  </div>
+
+  <!-- HELPER TIP BANNER -->
+  <div id="drag-hint" class="ui-fade fixed bottom-4 right-4 z-40 bg-slate-900/80 border border-slate-700/80 backdrop-blur-md px-3.5 py-2 rounded-xl text-xs text-slate-300 flex items-center gap-2 pointer-events-none">
+    <span class="text-cyan-400 font-bold">TIP:</span> Drag the overlay anywhere to line it up, or press <kbd class="px-1.5 py-0.5 bg-slate-800 border border-slate-600 rounded text-cyan-300 font-mono">H</kbd> to hide all menus.
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- OVERWATCH 2 SEAMLESS ADD-ON OVERLAY (ONLY VISUALIZER + SONG TICKER)   -->
+  <!-- ===================================================================== -->
+  <div id="hud-addon-anchor" class="cursor-grab active:cursor-grabbing">
+    <div class="flex flex-col gap-[6px]">
+      
+      <!-- TOP ROW: [Ghost Spacer for Real In-Game Healthbar] + [Audio Visualizer Box] -->
+      <div class="flex items-end gap-[8px]">
+        
+        <!-- Ghost Alignment Spacer (262x76px - represents where OW2's real healthbar + name sit) -->
+        <div id="native-ghost-box" class="native-hud-ghost">
+          <span class="text-[11px] font-bold tracking-widest uppercase">In-Game Health & Name</span>
+          <span class="text-[10px] opacity-75">(Empty Transparent Space for OBS)</span>
+        </div>
+
+        <!-- PART 1: REAL-TIME SYMMETRICAL AUDIO VISUALIZER (260x76px) -->
+        <div class="visualizer-slot">
+          <div id="visualizer-box" class="visualizer-box viz-boot-seed">
+            <div class="visualizer-glow-backdrop"></div>
+            <div class="visualizer-centerline"></div>
+            <canvas id="visualizer-canvas" width="244" height="64"></canvas>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- PART 2: FULL-WIDTH SONG TICKER BAR (530x28px - sits right below name & visualizer) -->
+      <div id="song-ticker-row" class="song-ticker-row ticker-boot-hidden">
+        <!-- Left OW2 Cyan Music Note Cap (#05bbfb with White glowing note matching '1' badge) -->
+        <div class="ow-badge-music">
+          <svg class="w-4 h-4 ow-badge-icon fill-current" viewBox="0 0 24 24">
+            <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+          </svg>
+        </div>
+
+        <!-- Scrolling Song / Status Marquee -->
+        <div class="ow-ticker-track-box flex-1 flex items-center overflow-hidden px-3 relative">
+          <div class="ticker-viewport">
+            <div id="ticker-track" class="ticker-content">
+              <span class="ow-ticker-text" id="ticker-text-1">CONNECT SPOTIFY OR ENTER SONG TITLE</span>
+              <span class="ow-ticker-text pl-12" id="ticker-text-2">CONNECT SPOTIFY OR ENTER SONG TITLE</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Cap with Vertical Divider + Overwatch Curved Audio/Loop Icon -->
+        <div class="ow-ticker-track-box flex items-center pr-2.5 pl-1 rounded-r-sm shrink-0 border-r border-white/10">
+          <div class="h-3.5 w-[1.5px] bg-cyan-400/50 mr-2"></div>
+          <svg class="w-4 h-4 text-slate-200 audio-emblem-spin" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="3.5" fill="currentColor"/>
+            <path d="M12 4C7.58 4 4 7.58 4 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            <path d="M12 20C16.42 20 20 16.42 20 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- CUSTOMIZATION & OBS EXPORT DRAWER (Right Side)                        -->
+  <!-- ===================================================================== -->
+  <aside id="studio-drawer" class="ui-fade fixed top-0 right-0 h-full w-full sm:w-[400px] bg-slate-950/95 border-l border-cyan-500/30 backdrop-blur-xl z-50 text-slate-100 flex flex-col shadow-2xl transition-transform duration-300 translate-x-0">
+    
+    <!-- Drawer Header -->
+    <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+      <div class="flex items-center gap-2.5">
+        <div class="w-3 h-6 bg-cyan-400 rounded-sm skew-x-[-12deg] shadow-[0_0_10px_#05bbfb]"></div>
+        <div>
+          <h2 class="font-bold tracking-wider uppercase text-base leading-none text-white">OW2 HUD Add-On Studio</h2>
+          <p class="text-xs text-slate-400 mt-0.5">Visualizer, Spotify & Song Ticker</p>
+        </div>
+      </div>
+      <button onclick="toggleDrawer()" class="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white transition">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- Scrollable Controls Body -->
+    <div class="flex-1 overflow-y-auto p-5 space-y-5 text-xs">
+
+      <!-- SECTION 1: PREVIEW MODE & ANIMATION TEST -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <span class="font-bold uppercase tracking-wider text-cyan-400">1. Background & Animations</span>
+          <button onclick="triggerBootAnimation()" class="text-[11px] text-cyan-300 hover:text-cyan-200 underline font-semibold">Replay Boot</button>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="btn-bg-guide" onclick="setPreviewMode(true)" class="py-2 px-2.5 rounded-lg font-bold uppercase border border-cyan-400 bg-cyan-500/20 text-cyan-200 transition text-center">
+            Alignment Guide
+          </button>
+          <button id="btn-bg-trans" onclick="setPreviewMode(false)" class="py-2 px-2.5 rounded-lg font-bold uppercase border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 transition text-center">
+            Transparent (OBS)
+          </button>
+        </div>
+        <button onclick="triggerSongChangeAnimation()" class="w-full py-1.5 px-2.5 rounded-lg font-bold uppercase border border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 transition text-center">
+          Preview Song Change Pan-Out Animation
+        </button>
+      </div>
+
+      <!-- SECTION 2: SPOTIFY KEY INPUT & LIVE NOW PLAYING -->
+      <div class="bg-slate-900/90 border border-emerald-500/30 rounded-xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-1.5">
+            <svg class="w-4 h-4 text-emerald-400 fill-current" viewBox="0 0 24 24">
+              <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+            </svg>
+            <span class="font-bold uppercase tracking-wider text-emerald-400">2. Spotify Integration</span>
+          </div>
+          <span id="spotify-status-pill" class="px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 text-[11px] font-semibold">Not Connected</span>
+        </div>
+
+        <div class="space-y-2">
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="text-slate-400">Spotify API Access Token (or Client ID)</label>
+              <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer" class="text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 underline flex items-center gap-1">
+                <span>Spotify Dev Dashboard</span>
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+              </a>
+            </div>
+            <div class="flex gap-1.5">
+              <input type="password" id="input-spotify-token" placeholder="Paste BQA... Access Token or Client ID" class="flex-1 bg-slate-950 border border-slate-700 focus:border-emerald-400 rounded-lg px-3 py-2 text-white font-mono text-[11px] outline-none select-text" />
+              <button onclick="toggleSpotifyKeyVisibility()" class="px-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300" title="Show/Hide Key">
+                👁
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-slate-400 mb-1">Ticker Prefix (Leave empty for Song — Artist only)</label>
+            <input type="text" id="input-spotify-prefix" value="" placeholder="Optional prefix (e.g. NOW PLAYING:)" oninput="saveSpotifyConfig()" class="w-full bg-slate-950 border border-slate-700 focus:border-emerald-400 rounded-lg px-3 py-1.5 text-white font-semibold tracking-wide outline-none select-text" />
+          </div>
+
+          <div class="grid grid-cols-2 gap-2 pt-1">
+            <button onclick="connectSpotifyToken()" id="btn-spotify-connect" class="py-2 px-2.5 rounded-lg font-bold uppercase bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition text-center shadow-lg shadow-emerald-500/10">
+              Connect Key
+            </button>
+            <button onclick="startSpotifyPKCE()" class="py-2 px-2.5 rounded-lg font-bold uppercase border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 transition text-center" title="Uses input above as Spotify Client ID to sign in via OAuth">
+              OAuth Login (Client ID)
+            </button>
+          </div>
+
+          <div id="spotify-now-playing-card" class="hidden mt-2 p-2.5 rounded-lg bg-slate-950/90 border border-emerald-500/30 flex items-center gap-2.5">
+            <img id="spotify-album-art" src="" alt="" class="w-9 h-9 rounded border border-white/10 object-cover shrink-0 hidden" />
+            <div class="min-w-0 flex-1">
+              <div id="spotify-track-name" class="text-white font-bold truncate text-xs">No track playing</div>
+              <div id="spotify-artist-name" class="text-emerald-400 text-[11px] truncate">Spotify Connected</div>
+            </div>
+            <button onclick="disconnectSpotify()" class="text-[10px] text-rose-400 hover:underline px-1.5 py-1">Stop</button>
+          </div>
+          
+          <p class="text-[10px] text-slate-400 leading-normal">
+            Get a Client ID from the <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer" class="text-emerald-400 underline hover:text-emerald-300">Spotify Dev Dashboard</a> and click <strong class="text-slate-300">OAuth Login</strong>, or paste an Access Token (<code class="text-emerald-300">user-read-currently-playing</code>) and click <strong class="text-slate-300">Connect Key</strong>.
+          </p>
+        </div>
+      </div>
+
+      <!-- SECTION 3: VISUALIZER CONFIGURATION -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="font-bold uppercase tracking-wider text-cyan-400">3. Visualizer Dynamics</span>
+          <span id="audio-status-pill" class="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold">Active Rhythm</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 pt-1">
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Bar Count</span>
+              <span id="val-bars" class="text-cyan-300 font-mono">30</span>
+            </div>
+            <input type="range" id="slider-bars" min="16" max="44" step="2" value="30" oninput="updateVisualizerConfig()" class="w-full accent-cyan-400" />
+          </div>
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Wave Gain</span>
+              <span id="val-sens" class="text-cyan-300 font-mono">1.2x</span>
+            </div>
+            <input type="range" id="slider-sens" min="0.5" max="2.5" step="0.1" value="1.2" oninput="updateVisualizerConfig()" class="w-full accent-cyan-400" />
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION 4: SONG TICKER TEXT & SPEED -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3">
+        <span class="font-bold uppercase tracking-wider text-cyan-400 block">4. Song Ticker Bar</span>
+        
+        <div>
+          <label class="block text-slate-400 mb-1">Scrolling Song Title / Artist</label>
+          <div class="flex gap-1.5">
+            <input type="text" id="input-ticker" value="CURRENTLY LISTENING TO: ASS LIKE THAT — EMINEM" oninput="updateTickerConfig(false)" class="flex-1 bg-slate-950 border border-slate-700 focus:border-cyan-400 rounded-lg px-3 py-2 text-white font-semibold tracking-wide outline-none select-text" />
+            <button onclick="triggerSongChangeAnimation(document.getElementById('input-ticker').value)" class="px-2.5 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 rounded-lg text-cyan-300 font-bold uppercase text-[10px]" title="Apply & Animate Pan-Out">
+              Animate
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 items-center pt-1">
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Scroll Speed</span>
+              <span id="val-speed" class="text-cyan-300 font-mono">8s</span>
+            </div>
+            <input type="range" id="slider-speed" min="5" max="35" step="1" value="8" oninput="updateTickerConfig(false)" class="w-full accent-cyan-400" />
+          </div>
+          <label class="text-slate-300 flex items-center gap-2 cursor-pointer mt-3">
+            <input type="checkbox" id="chk-scroll" onchange="updateTickerConfig(false)" class="accent-cyan-400 w-4 h-4 rounded" />
+            <span>Auto-Scroll</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- SECTION 5: COLOR THEME ACCENT PICKER -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3">
+        <span class="font-bold uppercase tracking-wider text-cyan-400 block">5. Overwatch Accent Theme</span>
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="setTheme('#05bbfb', 'rgba(5, 187, 251, 0.42)', '#05bbfb')" class="py-2 px-2 rounded-lg border border-cyan-400/60 bg-cyan-500/20 text-cyan-300 font-bold text-[11px]">OW2 HUD Blue (#05BBFB)</button>
+          <button onclick="setTheme('#ffbe0b', 'rgba(255, 190, 11, 0.42)', '#d99b00')" class="py-2 px-2 rounded-lg border border-amber-400/60 bg-amber-500/20 text-amber-300 font-bold text-[11px]">Mercy Gold</button>
+          <button onclick="setTheme('#10f5c4', 'rgba(16, 245, 196, 0.42)', '#0cb893')" class="py-2 px-2 rounded-lg border border-emerald-400/60 bg-emerald-500/20 text-emerald-300 font-bold text-[11px]">Kiriko Teal</button>
+          <button onclick="setTheme('#b538ff', 'rgba(181, 56, 255, 0.42)', '#8e24cc')" class="py-2 px-2 rounded-lg border border-purple-400/60 bg-purple-500/20 text-purple-300 font-bold text-[11px]">Widow Purple</button>
+        </div>
+        <div class="flex items-center justify-between pt-1">
+          <span class="text-slate-400">Custom Accent Hex</span>
+          <input type="color" id="custom-color-picker" value="#05bbfb" oninput="setCustomHex(this.value)" class="w-10 h-7 rounded bg-slate-950 border border-slate-700 cursor-pointer" />
+        </div>
+      </div>
+
+      <!-- SECTION 6: DETACHED VISUALIZER OFFSET -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="font-bold uppercase tracking-wider text-cyan-400">6. Visualizer Box Offset (Detached)</span>
+          <button onclick="resetVizOffset()" class="text-[11px] text-slate-400 hover:text-cyan-300 underline">Reset</button>
+        </div>
+        <p class="text-[10px] text-slate-400">Nudge the audio visualizer box independently without moving the song ticker below it:</p>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Visualizer (X)</span>
+              <span id="val-vizx" class="text-cyan-300 font-mono">-23px</span>
+            </div>
+            <input type="range" id="slider-vizx" min="-150" max="150" step="1" value="-23" oninput="updateVizOffsetFromSliders()" class="w-full accent-cyan-400" />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Visualizer (Y)</span>
+              <span id="val-vizy" class="text-cyan-300 font-mono">1px</span>
+            </div>
+            <input type="range" id="slider-vizy" min="-100" max="100" step="1" value="1" oninput="updateVizOffsetFromSliders()" class="w-full accent-cyan-400" />
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION 7: SKEW, TILT & SCREEN POSITION (HUD ALIGNMENT) -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="font-bold uppercase tracking-wider text-cyan-400">7. Skew, Tilt & Position</span>
+          <button onclick="resetPosition()" class="text-[11px] text-slate-400 hover:text-cyan-300 underline">Reset Default</button>
+        </div>
+
+        <!-- Position X & Y -->
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Position (X)</span>
+              <span id="val-posx" class="text-cyan-300 font-mono">17px</span>
+            </div>
+            <input type="range" id="slider-posx" min="-100" max="800" step="1" value="17" oninput="updatePositionFromSliders()" class="w-full accent-cyan-400" />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Position (Y)</span>
+              <span id="val-posy" class="text-cyan-300 font-mono">-162px</span>
+            </div>
+            <input type="range" id="slider-posy" min="-350" max="50" step="1" value="-162" oninput="updatePositionFromSliders()" class="w-full accent-cyan-400" />
+          </div>
+        </div>
+
+        <!-- Rotation & Skew -->
+        <div class="grid grid-cols-2 gap-3 pt-1 border-t border-slate-800">
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Rotation (Tilt)</span>
+              <span id="val-rot" class="text-cyan-300 font-mono">-4.0°</span>
+            </div>
+            <input type="range" id="slider-rot" min="-20" max="20" step="0.1" value="-4.0" oninput="updatePositionFromSliders()" class="w-full accent-cyan-400" />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-slate-400 mb-1">
+              <span>Horizontal Skew</span>
+              <span id="val-skew" class="text-cyan-300 font-mono">-4.5°</span>
+            </div>
+            <input type="range" id="slider-skew" min="-25" max="25" step="0.5" value="-4.5" oninput="updatePositionFromSliders()" class="w-full accent-cyan-400" />
+          </div>
+        </div>
+
+        <!-- Scale Size -->
+        <div class="pt-1 border-t border-slate-800">
+          <div class="flex justify-between text-slate-400 mb-1">
+            <span>Overall Scale / Size</span>
+            <span id="val-scale" class="text-cyan-300 font-mono">1.00x</span>
+          </div>
+          <input type="range" id="slider-scale" min="0.70" max="1.40" step="0.02" value="1.00" oninput="updatePositionFromSliders()" class="w-full accent-cyan-400" />
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Drawer Footer: Export Button -->
+    <div class="p-4 border-t border-slate-800 bg-slate-950 space-y-2">
+      <button onclick="exportObsFile()" class="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 hover:from-cyan-300 hover:to-sky-400 text-slate-950 font-extrabold uppercase tracking-wider text-xs shadow-lg shadow-cyan-500/25 transition flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        Export Clean OBS Overlay (.HTML)
+      </button>
+    </div>
+
+  </aside>
+
+  <!-- HOW TO VIEW & ADD TO OBS MODAL -->
+  <div id="howto-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-cyan-500/40 rounded-2xl max-w-lg w-full p-6 text-slate-200 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold uppercase tracking-wider text-cyan-400">How to View & Use in OBS Studio</h3>
+        <button onclick="toggleHowToModal(false)" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="space-y-3 text-xs leading-relaxed">
+        <p><strong class="text-white">1. Connect Spotify (Optional):</strong> Open the <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer" class="text-emerald-400 underline">Spotify Developer Dashboard</a>, copy your Client ID (or Access Token), and paste it in Section 2. Every time a song starts or changes, the visualizer lines will collapse to the center and pan out to reveal the new track!</p>
+        <p><strong class="text-white">2. Export Your Clean Overlay:</strong> Customize your song title, Spotify key, audio source, and X/Y screen offset, then click <strong>Export Clean OBS Overlay (.HTML)</strong>. It strips out all menus, background, and alignment guides automatically while keeping your Spotify connection active.</p>
+        <p><strong class="text-white">3. Add to OBS Studio:</strong></p>
+        <ul class="list-disc list-inside text-slate-300 space-y-1 pl-2">
+          <li>In OBS, click <strong>+</strong> under Sources and select <strong>Browser</strong>.</li>
+          <li>Check <strong>Local file</strong> and select your downloaded `ow2_hud_addon_overlay.html` file (or point URL to <code class="text-cyan-300">?obs=1</code>).</li>
+          <li>Set Width to <code class="text-cyan-300">1920</code> and Height to <code class="text-cyan-300">1080</code>.</li>
+          <li>Place it above your Overwatch 2 Game Capture—the visualizer sits right next to your real health bar and the song ticker sits right underneath your name!</li>
+        </ul>
+      </div>
+      <div class="pt-2 flex justify-end">
+        <button onclick="toggleHowToModal(false)" class="px-4 py-2 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs uppercase tracking-wider">Got It</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // STATE & INITIALIZATION
+    // =========================================================================
+    const state = {
+      alignmentGuideVisible: true,
+      drawerOpen: true,
+      uiHidden: false,
+      audioMode: 'sim',
+      barCount: 30,
+      sensitivity: 1.2,
+      accentColor: '#05bbfb',
+      accentGlow: 'rgba(5, 187, 251, 0.42)',
+      accentBadge: '#05bbfb',
+      posX: 17,
+      posY: -162,
+      vizOffsetX: -23,
+      vizOffsetY: 1,
+      rot: -4.0,
+      skew: -4.5,
+      scale: 1.0,
+      spotifyToken: localStorage.getItem('ow2_spotify_token') || '',
+      spotifyRefreshToken: localStorage.getItem('ow2_spotify_refresh_token') || '',
+      spotifyClientId: localStorage.getItem('ow2_spotify_client_id') || '',
+      spotifyPrefix: localStorage.getItem('ow2_spotify_prefix') || '',
+      tickerManualText: 'CURRENTLY LISTENING TO: ASS LIKE THAT — EMINEM',
+      tickerSpeed: 8,
+      tickerAutoScroll: false,
+      spotifyConnected: false,
+      spotifyIsPlaying: true,
+      spotifyPollInterval: null,
+      lastTrackId: null,
+      vizCollapsed: false
+    };
+
+    // Auto-sync settings to server for real-time OBS Browser Source updates
+    let saveTimeout = null;
+    function syncConfigToServer() {
+      clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(async () => {
+        try {
+          await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              posX: state.posX,
+              posY: state.posY,
+              vizOffsetX: state.vizOffsetX,
+              vizOffsetY: state.vizOffsetY,
+              rot: state.rot,
+              skew: state.skew,
+              scale: state.scale,
+              barCount: state.barCount,
+              sensitivity: state.sensitivity,
+              accentColor: state.accentColor,
+              accentGlow: state.accentGlow,
+              accentBadge: state.accentBadge,
+              spotifyToken: state.spotifyToken,
+              spotifyRefreshToken: state.spotifyRefreshToken,
+              spotifyClientId: state.spotifyClientId,
+              spotifyPrefix: state.spotifyPrefix,
+              tickerManualText: state.tickerManualText,
+              tickerSpeed: state.tickerSpeed,
+              tickerAutoScroll: state.tickerAutoScroll,
+              audioMode: state.audioMode
+            })
+          });
+        } catch (e) {}
+      }, 250);
+    }
+
+    // Check if URL has ?obs=1 for instant clean OBS Browser Source mode
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('obs') === '1') {
+      document.body.classList.add('obs-clean-mode', 'bg-obs-transparent');
+      document.body.classList.remove('bg-game-sim');
+    }
+    if (urlParams.get('spotify_token')) {
+      state.spotifyToken = urlParams.get('spotify_token');
+      localStorage.setItem('ow2_spotify_token', state.spotifyToken);
+    }
+
+    // Web Audio API variables
+    let audioCtx = null;
+    let analyser = null;
+    let dataArray = null;
+    let micStream = null;
+    let fileSourceNode = null;
+    let smoothedBars = new Array(64).fill(0.02);
+
+    // =========================================================================
+    // BOOT-UP & SONG START/END MIDDLE-LINE PAN-OUT ANIMATIONS
+    // =========================================================================
+    let animTimers = [];
+
+    function clearAnimTimers() {
+      animTimers.forEach(t => clearTimeout(t));
+      animTimers = [];
+    }
+
+    // Boot-up sequence:
+    // 1. Top & bottom blue lines start fused together in the middle (viz-boot-seed -> viz-collapsed)
+    // 2. The fused blue line expands horizontally across the visualizer width
+    // 3. The top & bottom blue lines pan out vertically, exposing the bar visualizers & song ticker
+    function triggerBootAnimation() {
+      clearAnimTimers();
+      const vizBox = document.getElementById('visualizer-box');
+      const tickerRow = document.getElementById('song-ticker-row');
+      if (!vizBox || !tickerRow) return;
+
+      state.vizCollapsed = true;
+      smoothedBars.fill(0.02);
+
+      vizBox.classList.add('viz-boot-seed', 'viz-collapsed');
+      tickerRow.classList.add('ticker-boot-hidden');
+
+      // Step 1: Draw the glowing center horizontal line
+      animTimers.push(setTimeout(() => {
+        vizBox.classList.remove('viz-boot-seed');
+      }, 90));
+
+      // Step 2: Pan the top & bottom blue lines outward from the middle to expose the visualizer bars
+      animTimers.push(setTimeout(() => {
+        vizBox.classList.remove('viz-collapsed');
+        tickerRow.classList.remove('ticker-boot-hidden');
+        state.vizCollapsed = false;
+      }, 520));
+    }
+
+    // Song Start / End Transition:
+    // 1. Ticker text smoothly slides out to the left while visualizer lines collapse
+    // 2. Swaps song text and resets position off-screen to the right
+    // 3. Slides the new song text in from the right while visualizer lines pan open
+    let isTransitioningSong = false;
+
+    function triggerSongChangeAnimation(newTickerText) {
+      clearAnimTimers();
+      const vizBox = document.getElementById('visualizer-box');
+      const tickerTrack = document.getElementById('ticker-track');
+      if (!vizBox || !tickerTrack) return;
+
+      isTransitioningSong = true;
+      state.vizCollapsed = true;
+      vizBox.classList.add('viz-collapsed');
+
+      // Step 1: Slide previous song text out to the left
+      tickerTrack.classList.remove('ticker-slide-prep-in');
+      tickerTrack.classList.add('ticker-slide-out');
+
+      // Step 2: Swap to new text while hidden off to the right
+      animTimers.push(setTimeout(() => {
+        if (typeof newTickerText === 'string' && newTickerText.trim()) {
+          const input = document.getElementById('input-ticker');
+          if (input) input.value = newTickerText;
+          renderTickerDOM(newTickerText);
+        }
+        tickerScrollPos = 0;
+
+        // Position new text off-screen to the right without animation
+        tickerTrack.classList.remove('ticker-slide-out');
+        tickerTrack.classList.add('ticker-slide-prep-in');
+
+        // Force browser reflow so the transition is primed
+        void tickerTrack.offsetWidth;
+
+        // Step 3: Slide new text in to position 0 and expand visualizer bars
+        animTimers.push(setTimeout(() => {
+          tickerTrack.classList.remove('ticker-slide-prep-in');
+          tickerTrack.style.transform = 'translateX(0px)';
+          tickerTrack.style.opacity = '1';
+
+          smoothedBars.fill(0.02);
+          vizBox.classList.remove('viz-collapsed');
+          state.vizCollapsed = false;
+
+          // Resume regular scrolling after slide-in settles
+          animTimers.push(setTimeout(() => {
+            isTransitioningSong = false;
+          }, 450));
+        }, 50));
+      }, 380));
+    }
+
+    // =========================================================================
+    // SPOTIFY WEB API INTEGRATION (ACCESS TOKEN OR PKCE OAUTH)
+    // =========================================================================
+    function toggleSpotifyKeyVisibility() {
+      const input = document.getElementById('input-spotify-token');
+      if (!input) return;
+      input.type = input.type === 'password' ? 'text' : 'password';
+    }
+
+    function saveSpotifyConfig() {
+      const prefixEl = document.getElementById('input-spotify-prefix');
+      if (prefixEl) {
+        state.spotifyPrefix = prefixEl.value.trim();
+        localStorage.setItem('ow2_spotify_prefix', state.spotifyPrefix);
+        syncConfigToServer();
+      }
+    }
+
+    async function connectSpotifyToken(tokenOverride) {
+      const inputEl = document.getElementById('input-spotify-token');
+      const rawKey = (tokenOverride !== undefined ? tokenOverride : (inputEl ? inputEl.value : state.spotifyToken)).trim();
+      const statusPill = document.getElementById('spotify-status-pill');
+
+      if (!rawKey) {
+        if (statusPill) {
+          statusPill.textContent = 'Enter Key First';
+          statusPill.className = 'px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-semibold';
+        }
+        return;
+      }
+
+      // If user pasted a 32-char hex Client ID instead of a Bearer token, start PKCE OAuth
+      if (/^[0-9a-fA-F]{32}$/.test(rawKey)) {
+        state.spotifyClientId = rawKey;
+        localStorage.setItem('ow2_spotify_client_id', rawKey);
+        startSpotifyPKCE();
+        return;
+      }
+
+      state.spotifyToken = rawKey.replace(/^Bearer\s+/i, '');
+      localStorage.setItem('ow2_spotify_token', state.spotifyToken);
+      syncConfigToServer();
+
+      if (statusPill) {
+        statusPill.textContent = 'Connecting...';
+        statusPill.className = 'px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-semibold';
+      }
+
+      const ok = await fetchSpotifyCurrentlyPlaying();
+      if (ok) {
+        if (state.spotifyPollInterval) clearInterval(state.spotifyPollInterval);
+        state.spotifyPollInterval = setInterval(fetchSpotifyCurrentlyPlaying, 4000);
+      }
+    }
+
+    async function fetchSpotifyCurrentlyPlaying() {
+      if (!state.spotifyToken) return false;
+      const statusPill = document.getElementById('spotify-status-pill');
+      const card = document.getElementById('spotify-now-playing-card');
+      const trackEl = document.getElementById('spotify-track-name');
+      const artistEl = document.getElementById('spotify-artist-name');
+      const artEl = document.getElementById('spotify-album-art');
+      const vizBox = document.getElementById('visualizer-box');
+
+      try {
+        const res = await fetch('https://api.spotify.com/v1/me/player/currently-playing', {
+          headers: { 'Authorization': `Bearer ${state.spotifyToken}` }
+        });
+
+        if (res.status === 401) {
+          const refreshed = await refreshSpotifyToken();
+          if (refreshed) return await fetchSpotifyCurrentlyPlaying();
+
+          state.spotifyConnected = false;
+          if (statusPill) {
+            statusPill.textContent = 'Invalid / Expired Key';
+            statusPill.className = 'px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-semibold';
+          }
+          return false;
+        }
+
+        state.spotifyConnected = true;
+        if (statusPill) {
+          statusPill.textContent = 'Live Connected';
+          statusPill.className = 'px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold';
+        }
+        if (card) card.classList.remove('hidden');
+
+        if (res.status === 204 || res.status > 400) {
+          if (trackEl) trackEl.textContent = 'Paused / Nothing Playing';
+          if (artistEl) artistEl.textContent = 'Play a song on Spotify';
+          if (state.spotifyIsPlaying) {
+            state.spotifyIsPlaying = false;
+            if (vizBox) vizBox.classList.add('viz-collapsed');
+          }
+          return true;
+        }
+
+        const data = await res.json();
+        if (data && data.item) {
+          const trackId = data.item.id || data.item.name;
+          const trackName = data.item.name;
+          const artists = (data.item.artists || []).map(a => a.name).join(', ');
+          const albumArt = data.item.album?.images?.[0]?.url || '';
+          const nowPlaying = Boolean(data.is_playing);
+
+          if (trackEl) trackEl.textContent = trackName;
+          if (artistEl) artistEl.textContent = `${artists} ${nowPlaying ? '• Playing' : '• Paused'}`;
+          if (artEl && albumArt) {
+            artEl.src = albumArt;
+            artEl.classList.remove('hidden');
+          }
+
+          const prefix = state.spotifyPrefix ? `${state.spotifyPrefix} ` : '';
+          const fullTicker = `${prefix}${trackName} — ${artists}`.trim().toUpperCase();
+
+          // Detect song change or playback resume/pause to trigger middle-line pan-out animation
+          if (! nowPlaying && state.spotifyIsPlaying) {
+            // Song paused/ended -> collapse top and bottom blue lines to middle
+            state.spotifyIsPlaying = false;
+            state.vizCollapsed = true;
+            if (vizBox) vizBox.classList.add('viz-collapsed');
+          } else if (nowPlaying && !state.spotifyIsPlaying) {
+            // Song resumed -> pan out top and bottom lines from center
+            state.spotifyIsPlaying = true;
+            state.vizCollapsed = false;
+            if (vizBox) vizBox.classList.remove('viz-collapsed');
+          }
+
+          if (state.lastTrackId !== trackId) {
+            const isFirstFetch = state.lastTrackId === null;
+            state.lastTrackId = trackId;
+            if (!isFirstFetch && nowPlaying) {
+              triggerSongChangeAnimation(fullTicker);
+            } else {
+              const tickerInput = document.getElementById('input-ticker');
+              if (tickerInput) tickerInput.value = fullTicker;
+              renderTickerDOM(fullTicker);
+            }
+          }
+        }
+        return true;
+      } catch (err) {
+        if (statusPill) {
+          statusPill.textContent = 'Connection Error';
+          statusPill.className = 'px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-semibold';
+        }
+        return false;
+      }
+    }
+
+    function disconnectSpotify() {
+      if (state.spotifyPollInterval) clearInterval(state.spotifyPollInterval);
+      state.spotifyPollInterval = null;
+      state.spotifyConnected = false;
+      state.spotifyToken = '';
+      state.spotifyRefreshToken = '';
+      state.lastTrackId = null;
+      localStorage.removeItem('ow2_spotify_token');
+      localStorage.removeItem('ow2_spotify_refresh_token');
+
+      const vizBox = document.getElementById('visualizer-box');
+      if (vizBox) vizBox.classList.remove('viz-collapsed');
+      state.vizCollapsed = false;
+
+      const inputEl = document.getElementById('input-spotify-token');
+      if (inputEl) inputEl.value = '';
+      const card = document.getElementById('spotify-now-playing-card');
+      if (card) card.classList.add('hidden');
+      const statusPill = document.getElementById('spotify-status-pill');
+      if (statusPill) {
+        statusPill.textContent = 'Disconnected';
+        statusPill.className = 'px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 text-[11px] font-semibold';
+      }
+    }
+
+    // Spotify OAuth 2.0 PKCE Flow for users entering a Spotify Client ID
+    async function startSpotifyPKCE() {
+      const inputEl = document.getElementById('input-spotify-token');
+      const clientId = (inputEl?.value.trim() || state.spotifyClientId).trim();
+      const statusPill = document.getElementById('spotify-status-pill');
+
+      if (!clientId || clientId.length < 16) {
+        if (statusPill) {
+          statusPill.textContent = 'Enter Client ID First';
+          statusPill.className = 'px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-semibold';
+        }
+        return;
+      }
+
+      state.spotifyClientId = clientId;
+      localStorage.setItem('ow2_spotify_client_id', clientId);
+
+      const verifier = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+        .map(b => ('0' + b.toString(16)).slice(-2)).join('');
+      localStorage.setItem('ow2_spotify_verifier', verifier);
+
+      const encoder = new TextEncoder();
+      const data = encoder.encode(verifier);
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+      const redirectUri = window.location.origin + window.location.pathname;
+      const authUrl = new URL('https://accounts.spotify.com/authorize');
+      authUrl.searchParams.set('client_id', clientId);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('redirect_uri', redirectUri);
+      authUrl.searchParams.set('scope', 'user-read-currently-playing user-read-playback-state');
+      authUrl.searchParams.set('code_challenge_method', 'S256');
+      authUrl.searchParams.set('code_challenge', challenge);
+
+      window.location.href = authUrl.toString();
+    }
+
+    async function handleSpotifyPKCECallback() {
+      const code = urlParams.get('code');
+      if (!code) return;
+
+      const verifier = localStorage.getItem('ow2_spotify_verifier');
+      const clientId = localStorage.getItem('ow2_spotify_client_id');
+      if (!verifier || !clientId) return;
+
+      const redirectUri = window.location.origin + window.location.pathname;
+      try {
+        const body = new URLSearchParams({
+          client_id: clientId,
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: redirectUri,
+          code_verifier: verifier
+        });
+
+        const res = await fetch('https://accounts.spotify.com/api/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body
+        });
+        const tokenData = await res.json();
+        if (tokenData.access_token) {
+          state.spotifyToken = tokenData.access_token;
+          localStorage.setItem('ow2_spotify_token', tokenData.access_token);
+          if (tokenData.refresh_token) {
+            state.spotifyRefreshToken = tokenData.refresh_token;
+            localStorage.setItem('ow2_spotify_refresh_token', tokenData.refresh_token);
+          }
+          window.history.replaceState({}, document.title, redirectUri);
+          const inputEl = document.getElementById('input-spotify-token');
+          if (inputEl) inputEl.value = state.spotifyToken;
+          connectSpotifyToken(state.spotifyToken);
+        }
+      } catch (e) {
+        console.error('Spotify PKCE token exchange failed:', e);
+      }
+    }
+
+    async function refreshSpotifyToken() {
+      if (!state.spotifyRefreshToken || !state.spotifyClientId) return false;
+      try {
+        const body = new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: state.spotifyRefreshToken,
+          client_id: state.spotifyClientId
+        });
+        const res = await fetch('https://accounts.spotify.com/api/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body
+        });
+        const data = await res.json();
+        if (data.access_token) {
+          state.spotifyToken = data.access_token;
+          localStorage.setItem('ow2_spotify_token', data.access_token);
+          if (data.refresh_token) {
+            state.spotifyRefreshToken = data.refresh_token;
+            localStorage.setItem('ow2_spotify_refresh_token', data.refresh_token);
+          }
+          return true;
+        }
+      } catch (e) {
+        return false;
+      }
+      return false;
+    }
+
+    // =========================================================================
+    // REAL-TIME SYMMETRICAL AUDIO VISUALIZER RENDERER
+    // =========================================================================
+    const canvas = document.getElementById('visualizer-canvas');
+    const ctx = canvas.getContext('2d');
+
+    function renderVisualizer(timestamp) {
+      const width = canvas.width;
+      const height = canvas.height;
+      ctx.clearRect(0, 0, width, height);
+
+      const numBars = state.barCount;
+      const totalGapSpace = width * 0.34;
+      const barWidth = Math.max(2.5, (width - totalGapSpace) / numBars);
+      const gap = totalGapSpace / (numBars + 1);
+      const centerY = height / 2;
+
+      if ((state.audioMode === 'mic' || state.audioMode === 'file') && analyser && dataArray) {
+        analyser.getByteFrequencyData(dataArray);
+      }
+
+      const t = timestamp * 0.0045;
+
+      for (let i = 0; i < numBars; i++) {
+        const normPos = i / (numBars - 1);
+        const edgeEnvelope = Math.sin(normPos * Math.PI);
+
+        let targetAmp = 0.08;
+
+        if (state.vizCollapsed) {
+          targetAmp = 0.02;
+        } else if ((state.audioMode === 'mic' || state.audioMode === 'file') && analyser && dataArray) {
+          const binIndex = Math.floor(Math.abs((normPos - 0.5) * 2) * (dataArray.length * 0.45));
+          const rawVal = dataArray[binIndex] / 255;
+          targetAmp = Math.max(0.06, rawVal * state.sensitivity * (0.45 + 0.55 * edgeEnvelope));
+        } else if (state.spotifyConnected && !state.spotifyIsPlaying) {
+          targetAmp = 0.06;
+        } else {
+          // Simulated Energetic Music Waveform
+          const wave1 = Math.sin(t * 2.1 + i * 0.55) * 0.5 + 0.5;
+          const wave2 = Math.cos(t * 3.4 - i * 0.85) * 0.5 + 0.5;
+          const kickPulse = Math.pow(Math.sin(t * 1.6) * 0.5 + 0.5, 2.5);
+          const combined = (wave1 * 0.45 + wave2 * 0.35 + kickPulse * 0.4) * state.sensitivity;
+          targetAmp = Math.max(0.08, Math.min(0.96, combined * (0.25 + 0.78 * edgeEnvelope)));
+        }
+
+        smoothedBars[i] += (targetAmp - smoothedBars[i]) * 0.24;
+        const barHeight = Math.max(4, Math.min(height - 4, smoothedBars[i] * (height - 6)));
+
+        const x = gap + i * (barWidth + gap);
+        const y = centerY - barHeight / 2;
+
+        ctx.save();
+        ctx.shadowColor = state.accentColor;
+        ctx.shadowBlur = 7;
+        ctx.fillStyle = state.accentColor;
+
+        drawRoundedBar(ctx, x, y, barWidth, barHeight, barWidth / 2);
+        ctx.fill();
+
+        if (smoothedBars[i] > 0.38) {
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = '#e0f7ff';
+          const coreH = barHeight * 0.45;
+          drawRoundedBar(ctx, x + barWidth * 0.2, centerY - coreH / 2, barWidth * 0.6, coreH, barWidth / 3);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      requestAnimationFrame(renderVisualizer);
+    }
+
+    function drawRoundedBar(context, x, y, w, h, r) {
+      const radius = Math.min(r, w / 2, h / 2);
+      context.beginPath();
+      context.moveTo(x + radius, y);
+      context.lineTo(x + w - radius, y);
+      context.quadraticCurveTo(x + w, y, x + w, y + radius);
+      context.lineTo(x + w, y + h - radius);
+      context.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      context.lineTo(x + radius, y + h);
+      context.quadraticCurveTo(x, y + h, x, y + h - radius);
+      context.lineTo(x, y + radius);
+      context.quadraticCurveTo(x, y, x + radius, y);
+      context.closePath();
+    }
+
+    // =========================================================================
+    // AUDIO INPUT HANDLERS
+    // =========================================================================
+    async function setAudioMode(mode) {
+      const statusPill = document.getElementById('audio-status-pill');
+      const btnSim = document.getElementById('btn-audio-sim');
+      const btnMic = document.getElementById('btn-audio-mic');
+      const audioPlayer = document.getElementById('uploaded-audio');
+
+      [btnSim, btnMic].forEach(b => {
+        b.className = 'py-2 px-2 rounded-lg font-bold uppercase border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 transition text-center';
+      });
+
+      if (mode === 'sim') {
+        state.audioMode = 'sim';
+        audioPlayer.pause();
+        audioPlayer.classList.add('hidden');
+        btnSim.className = 'py-2 px-2 rounded-lg font-bold uppercase border border-cyan-400 bg-cyan-500/20 text-cyan-200 transition text-center';
+        statusPill.textContent = 'Synth Demo Beat';
+        return;
+      }
+
+      if (mode === 'mic') {
+        try {
+          if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          const source = audioCtx.createMediaStreamSource(micStream);
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 128;
+          analyser.smoothingTimeConstant = 0.75;
+          source.connect(analyser);
+          dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+          state.audioMode = 'mic';
+          audioPlayer.pause();
+          audioPlayer.classList.add('hidden');
+          btnMic.className = 'py-2 px-2 rounded-lg font-bold uppercase border border-cyan-400 bg-cyan-500/20 text-cyan-200 transition text-center';
+          statusPill.textContent = 'Live Mic / Loopback';
+        } catch (err) {
+          statusPill.textContent = 'Mic Blocked (Using Sim)';
+          setAudioMode('sim');
+        }
+      }
+    }
+
+    async function handleAudioUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const audioPlayer = document.getElementById('uploaded-audio');
+      audioPlayer.src = URL.createObjectURL(file);
+      audioPlayer.classList.remove('hidden');
+
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+      if (!fileSourceNode) {
+        fileSourceNode = audioCtx.createMediaElementSource(audioPlayer);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 128;
+        fileSourceNode.connect(analyser);
+        analyser.connect(audioCtx.destination);
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+      }
+
+      // Collapse visualizer lines when song ends, and pan out when song starts playing
+      audioPlayer.onended = () => {
+        state.vizCollapsed = true;
+        const vizBox = document.getElementById('visualizer-box');
+        if (vizBox) vizBox.classList.add('viz-collapsed');
+      };
+      audioPlayer.onplay = () => {
+        const vizBox = document.getElementById('visualizer-box');
+        if (vizBox && vizBox.classList.contains('viz-collapsed')) {
+          state.vizCollapsed = false;
+          vizBox.classList.remove('viz-collapsed');
+        }
+      };
+
+      const cleanName = file.name.replace(/\.[^/.]+$/, '').toUpperCase();
+      const newTitle = `NOW PLAYING: ${cleanName}`;
+      triggerSongChangeAnimation(newTitle);
+
+      state.audioMode = 'file';
+      document.getElementById('audio-status-pill').textContent = 'Playing Local Audio';
+      audioPlayer.play();
+    }
+
+    // =========================================================================
+    // CONFIGURATION & UI CONTROLS
+    // =========================================================================
+    function updateVisualizerConfig() {
+      state.barCount = parseInt(document.getElementById('slider-bars').value, 10);
+      state.sensitivity = parseFloat(document.getElementById('slider-sens').value);
+      document.getElementById('val-bars').textContent = state.barCount;
+      document.getElementById('val-sens').textContent = state.sensitivity.toFixed(1) + 'x';
+      syncConfigToServer();
+    }
+
+    function updateTickerConfig(animate = false) {
+      const tickerVal = document.getElementById('input-ticker').value || 'OVERWATCH 2 STREAM OVERLAY';
+      const speedVal = parseInt(document.getElementById('slider-speed').value, 10);
+      const shouldScroll = document.getElementById('chk-scroll').checked;
+
+      state.tickerManualText = tickerVal;
+      state.tickerSpeed = speedVal;
+      state.tickerAutoScroll = shouldScroll;
+
+      if (animate) {
+        triggerSongChangeAnimation(tickerVal);
+      } else {
+        renderTickerDOM(tickerVal);
+      }
+
+      document.getElementById('val-speed').textContent = speedVal + 's';
+      syncConfigToServer();
+    }
+
+    // Dynamic Marquee Scrolling Loop (Infinite Continuous Drift without Jitter/Skips)
+    let tickerScrollPos = 0;
+    let tickerLastFrame = performance.now();
+
+    function renderTickerDOM(text) {
+      const t1 = document.getElementById('ticker-text-1');
+      const t2 = document.getElementById('ticker-text-2');
+      const track = document.getElementById('ticker-track');
+
+      if (t1) t1.textContent = text;
+
+      if (!state.tickerAutoScroll) {
+        // Auto-Scroll is OFF: completely hide duplicate text and freeze position at 0
+        if (t2) t2.style.display = 'none';
+        tickerScrollPos = 0;
+        if (track) track.style.transform = 'translateX(0px)';
+      } else {
+        // Auto-Scroll is ON: show duplicate text for looping
+        if (t2) {
+          t2.textContent = text;
+          t2.style.display = 'inline-block';
+        }
+      }
+    }
+
+    function animateTickerLoop(now) {
+      const dt = (now - tickerLastFrame) / 1000;
+      tickerLastFrame = now;
+
+      const track = document.getElementById('ticker-track');
+
+      // Do not override transforms while slide-out / slide-in animation is running
+      if (isTransitioningSong) {
+        requestAnimationFrame(animateTickerLoop);
+        return;
+      }
+
+      if (!state.tickerAutoScroll) {
+        // Hard lock position to 0 when auto-scroll is off
+        tickerScrollPos = 0;
+        if (track && track.style.transform !== 'translateX(0px)') {
+          track.style.transform = 'translateX(0px)';
+        }
+      } else {
+        const t1 = document.getElementById('ticker-text-1');
+        if (t1 && track) {
+          const pxPerSecond = Math.max(15, 600 / Math.max(5, state.tickerSpeed));
+          tickerScrollPos += pxPerSecond * dt;
+
+          const loopBoundary = t1.offsetWidth + 48; // span width + 48px padding (pl-12)
+          if (loopBoundary > 0 && tickerScrollPos >= loopBoundary) {
+            tickerScrollPos %= loopBoundary;
+          }
+          track.style.transform = `translateX(-${tickerScrollPos}px)`;
+        }
+      }
+
+      requestAnimationFrame(animateTickerLoop);
+    }
+
+    function setTheme(accent, glow, badge) {
+      state.accentColor = accent;
+      state.accentGlow = glow;
+      state.accentBadge = badge;
+      const root = document.documentElement;
+      root.style.setProperty('--ow-accent', accent);
+      root.style.setProperty('--ow-accent-glow', glow);
+      root.style.setProperty('--ow-accent-badge', badge);
+      const picker = document.getElementById('custom-color-picker');
+      if (picker) picker.value = accent;
+      syncConfigToServer();
+    }
+
+    function setCustomHex(hex) {
+      setTheme(hex, `${hex}6b`, hex);
+    }
+
+    function setPreviewMode(showGuide) {
+      state.alignmentGuideVisible = showGuide;
+      const body = document.getElementById('app-body');
+      const ghost = document.getElementById('native-ghost-box');
+      const label = document.getElementById('preview-mode-label');
+      const btnGuide = document.getElementById('btn-bg-guide');
+      const btnTrans = document.getElementById('btn-bg-trans');
+
+      if (showGuide) {
+        body.classList.add('bg-game-sim');
+        body.classList.remove('bg-obs-transparent');
+        ghost.style.opacity = '1';
+        label.textContent = 'View: Alignment Guide';
+        btnGuide.className = 'py-2 px-2.5 rounded-lg font-bold uppercase border border-cyan-400 bg-cyan-500/20 text-cyan-200 transition text-center';
+        btnTrans.className = 'py-2 px-2.5 rounded-lg font-bold uppercase border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 transition text-center';
+      } else {
+        body.classList.remove('bg-game-sim');
+        body.classList.add('bg-obs-transparent');
+        ghost.style.opacity = '0';
+        label.textContent = 'View: Transparent (OBS)';
+        btnTrans.className = 'py-2 px-2.5 rounded-lg font-bold uppercase border border-cyan-400 bg-cyan-500/20 text-cyan-200 transition text-center';
+        btnGuide.className = 'py-2 px-2.5 rounded-lg font-bold uppercase border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300 transition text-center';
+      }
+    }
+
+    function togglePreviewMode() {
+      setPreviewMode(!state.alignmentGuideVisible);
+    }
+
+    function updateVizOffsetFromSliders() {
+      state.vizOffsetX = parseInt(document.getElementById('slider-vizx').value, 10);
+      state.vizOffsetY = parseInt(document.getElementById('slider-vizy').value, 10);
+      applyVizOffset(false);
+    }
+
+    function applyVizOffset(skipSync = false) {
+      document.documentElement.style.setProperty('--viz-offset-x', `${state.vizOffsetX}px`);
+      document.documentElement.style.setProperty('--viz-offset-y', `${state.vizOffsetY}px`);
+      const valX = document.getElementById('val-vizx');
+      const valY = document.getElementById('val-vizy');
+      const sliderX = document.getElementById('slider-vizx');
+      const sliderY = document.getElementById('slider-vizy');
+      if (valX) valX.textContent = `${state.vizOffsetX}px`;
+      if (valY) valY.textContent = `${state.vizOffsetY}px`;
+      if (sliderX) sliderX.value = state.vizOffsetX;
+      if (sliderY) sliderY.value = state.vizOffsetY;
+      if (!skipSync) syncConfigToServer();
+    }
+
+    function resetVizOffset() {
+      state.vizOffsetX = -23;
+      state.vizOffsetY = 1;
+      applyVizOffset(false);
+    }
+
+    function updatePositionFromSliders() {
+      state.posX = parseInt(document.getElementById('slider-posx').value, 10);
+      state.posY = parseInt(document.getElementById('slider-posy').value, 10);
+      state.rot = parseFloat(document.getElementById('slider-rot').value);
+      state.skew = parseFloat(document.getElementById('slider-skew').value);
+      state.scale = parseFloat(document.getElementById('slider-scale').value);
+      applyPositionVariables();
+    }
+
+    function applyPositionVariables(skipSync = false) {
+      document.documentElement.style.setProperty('--hud-x', `${state.posX}px`);
+      document.documentElement.style.setProperty('--hud-y', `${state.posY}px`);
+      document.documentElement.style.setProperty('--hud-rot', `${state.rot}deg`);
+      document.documentElement.style.setProperty('--hud-skew', `${state.skew}deg`);
+      document.documentElement.style.setProperty('--hud-scale', `${state.scale}`);
+
+      const valX = document.getElementById('val-posx');
+      const valY = document.getElementById('val-posy');
+      const valRot = document.getElementById('val-rot');
+      const valSkew = document.getElementById('val-skew');
+      const valScale = document.getElementById('val-scale');
+
+      const sliderX = document.getElementById('slider-posx');
+      const sliderY = document.getElementById('slider-posy');
+      const sliderRot = document.getElementById('slider-rot');
+      const sliderSkew = document.getElementById('slider-skew');
+      const sliderScale = document.getElementById('slider-scale');
+
+      if (valX) valX.textContent = `${state.posX}px`;
+      if (valY) valY.textContent = `${state.posY}px`;
+      if (valRot) valRot.textContent = `${state.rot.toFixed(1)}°`;
+      if (valSkew) valSkew.textContent = `${state.skew.toFixed(1)}°`;
+      if (valScale) valScale.textContent = `${state.scale.toFixed(2)}x`;
+
+      if (sliderX) sliderX.value = state.posX;
+      if (sliderY) sliderY.value = state.posY;
+      if (sliderRot) sliderRot.value = state.rot;
+      if (sliderSkew) sliderSkew.value = state.skew;
+      if (sliderScale) sliderScale.value = state.scale;
+
+      if (!skipSync) syncConfigToServer();
+    }
+
+    function resetPosition() {
+      state.posX = 17;
+      state.posY = -162;
+      state.rot = -4.0;
+      state.skew = -4.5;
+      state.scale = 1.0;
+      applyPositionVariables();
+    }
+
+    function toggleDrawer() {
+      state.drawerOpen = !state.drawerOpen;
+      document.getElementById('studio-drawer').classList.toggle('translate-x-full', !state.drawerOpen);
+    }
+
+    function toggleHowToModal(show) {
+      const modal = document.getElementById('howto-modal');
+      modal.classList.toggle('hidden', !show);
+      modal.classList.toggle('flex', show);
+    }
+
+    // Drag-to-move the overlay anywhere on screen
+    const hudAnchor = document.getElementById('hud-addon-anchor');
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+
+    hudAnchor.addEventListener('pointerdown', (e) => {
+      isDragging = true;
+      dragStartX = e.clientX - state.posX;
+      dragStartY = e.clientY - state.posY;
+      hudAnchor.setPointerCapture(e.pointerId);
+    });
+
+    hudAnchor.addEventListener('pointermove', (e) => {
+      if (!isDragging) return;
+      state.posX = e.clientX - dragStartX;
+      state.posY = e.clientY - dragStartY;
+      applyPositionVariables();
+    });
+
+    hudAnchor.addEventListener('pointerup', () => {
+      isDragging = false;
+    });
+
+    // Press 'H' to toggle all studio UI menus
+    window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      if (e.key.toLowerCase() === 'h') {
+        document.body.classList.toggle('obs-clean-mode');
+      }
+    });
+
+    // =========================================================================
+    // ONE-CLICK CLEAN OBS BROWSER SOURCE HTML EXPORT
+    // =========================================================================
+    function exportObsFile() {
+      const clone = document.documentElement.cloneNode(true);
+      const bodyClone = clone.querySelector('#app-body');
+      bodyClone.className = 'bg-obs-transparent obs-clean-mode relative select-none';
+
+      // Ensure exported overlay boots with the middle-line pan-out animation
+      const vizClone = clone.querySelector('#visualizer-box');
+      if (vizClone) vizClone.className = 'visualizer-box viz-boot-seed';
+      const tickerClone = clone.querySelector('#song-ticker-row');
+      if (tickerClone) tickerClone.className = 'song-ticker-row ticker-boot-hidden';
+
+      // Embed current Spotify token & config into the exported file so OBS works automatically
+      const embeddedScript = document.createElement('script');
+      embeddedScript.textContent = `
+        window.__EXPORTED_CONFIG__ = ${JSON.stringify({
+          posX: state.posX,
+          posY: state.posY,
+          rot: state.rot,
+          skew: state.skew,
+          scale: state.scale,
+          barCount: state.barCount,
+          sensitivity: state.sensitivity,
+          accentColor: state.accentColor,
+          accentGlow: state.accentGlow,
+          accentBadge: state.accentBadge,
+          spotifyToken: state.spotifyToken,
+          spotifyRefreshToken: state.spotifyRefreshToken,
+          spotifyClientId: state.spotifyClientId,
+          spotifyPrefix: state.spotifyPrefix
+        })};
+      `;
+      clone.querySelector('head').appendChild(embeddedScript);
+
+      // Remove studio UI and ghost alignment guide in the exported file
+      ['#top-toolbar', '#studio-drawer', '#drag-hint', '#howto-modal'].forEach(sel => {
+        const el = clone.querySelector(sel);
+        if (el) el.remove();
+      });
+
+      const ghost = clone.querySelector('#native-ghost-box');
+      if (ghost) ghost.style.opacity = '0';
+
+      const htmlContent = '<!DOCTYPE html>\n' + clone.outerHTML;
+      const blob = new Blob([htmlContent], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'ow2_hud_addon_overlay.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // Load server config and poll for changes if inside OBS (?obs=1)
+    async function loadServerConfig() {
+      try {
+        const res = await fetch('/api/config');
+        if (res.ok) {
+          const cfg = await res.json();
+          if (cfg && Object.keys(cfg).length > 0) {
+            applyServerConfig(cfg);
+          }
+        }
+      } catch (e) {}
+    }
+
+    function applyServerConfig(cfg) {
+      if (typeof cfg.posX === 'number') state.posX = cfg.posX;
+      if (typeof cfg.posY === 'number') state.posY = cfg.posY;
+      if (typeof cfg.vizOffsetX === 'number') state.vizOffsetX = cfg.vizOffsetX;
+      if (typeof cfg.vizOffsetY === 'number') state.vizOffsetY = cfg.vizOffsetY;
+      if (typeof cfg.rot === 'number') state.rot = cfg.rot;
+      if (typeof cfg.skew === 'number') state.skew = cfg.skew;
+      if (typeof cfg.scale === 'number') state.scale = cfg.scale;
+      if (typeof cfg.barCount === 'number') state.barCount = cfg.barCount;
+      if (typeof cfg.sensitivity === 'number') state.sensitivity = cfg.sensitivity;
+      if (cfg.accentColor) state.accentColor = cfg.accentColor;
+      if (cfg.accentGlow) state.accentGlow = cfg.accentGlow;
+      if (cfg.accentBadge) state.accentBadge = cfg.accentBadge;
+      if (cfg.spotifyPrefix) state.spotifyPrefix = cfg.spotifyPrefix;
+      if (cfg.spotifyToken && !state.spotifyToken) state.spotifyToken = cfg.spotifyToken;
+      if (cfg.spotifyClientId && !state.spotifyClientId) state.spotifyClientId = cfg.spotifyClientId;
+      if (typeof cfg.tickerSpeed === 'number') state.tickerSpeed = cfg.tickerSpeed;
+      if (typeof cfg.tickerAutoScroll === 'boolean') state.tickerAutoScroll = cfg.tickerAutoScroll;
+      if (cfg.tickerManualText) state.tickerManualText = cfg.tickerManualText;
+
+      setTheme(state.accentColor, state.accentGlow, state.accentBadge);
+      applyPositionVariables(true);
+      applyVizOffset(true);
+
+      const valBars = document.getElementById('val-bars');
+      const sliderBars = document.getElementById('slider-bars');
+      if (valBars) valBars.textContent = state.barCount;
+      if (sliderBars) sliderBars.value = state.barCount;
+
+      const valSens = document.getElementById('val-sens');
+      const sliderSens = document.getElementById('slider-sens');
+      if (valSens) valSens.textContent = state.sensitivity.toFixed(1) + 'x';
+      if (sliderSens) sliderSens.value = state.sensitivity;
+
+      const valSpeed = document.getElementById('val-speed');
+      const sliderSpeed = document.getElementById('slider-speed');
+      const chkScroll = document.getElementById('chk-scroll');
+      if (valSpeed) valSpeed.textContent = state.tickerSpeed + 's';
+      if (sliderSpeed) sliderSpeed.value = state.tickerSpeed;
+      if (chkScroll) chkScroll.checked = state.tickerAutoScroll;
+      document.documentElement.style.setProperty('--ticker-speed', `${state.tickerSpeed}s`);
+
+      // If Spotify is not connected, set ticker text
+      if (!state.spotifyConnected && cfg.tickerManualText) {
+        state.tickerManualText = cfg.tickerManualText;
+      }
+      renderTickerDOM(state.tickerManualText);
+    }
+
+    window.onload = async () => {
+      // 1. Fetch live shared server config first
+      await loadServerConfig();
+
+      // Enforce the default auto-scroll and manual text on boot
+      const chkScrollEl = document.getElementById('chk-scroll');
+      if (chkScrollEl) state.tickerAutoScroll = chkScrollEl.checked;
+      renderTickerDOM(state.tickerManualText);
+
+      // If inside OBS (?obs=1), poll server config every 2 seconds for real-time adjustments from browser
+      if (window.location.search.includes('obs=1')) {
+        setInterval(async () => {
+          try {
+            const res = await fetch('/api/config');
+            if (res.ok) {
+              const cfg = await res.json();
+              applyServerConfig(cfg);
+            }
+          } catch (e) {}
+        }, 2000);
+      }
+
+      // Load exported config if running from a downloaded offline file
+      if (window.__EXPORTED_CONFIG__) {
+        Object.assign(state, window.__EXPORTED_CONFIG__);
+        setTheme(state.accentColor, state.accentGlow, state.accentBadge);
+      }
+
+      const tokenInput = document.getElementById('input-spotify-token');
+      if (tokenInput && state.spotifyToken) {
+        tokenInput.value = state.spotifyToken;
+      }
+      const prefixInput = document.getElementById('input-spotify-prefix');
+      if (prefixInput && state.spotifyPrefix) {
+        prefixInput.value = state.spotifyPrefix;
+      }
+
+      handleSpotifyPKCECallback();
+      if (state.spotifyToken) {
+        connectSpotifyToken(state.spotifyToken);
+      }
+
+      applyPositionVariables(true);
+      applyVizOffset(true);
+      requestAnimationFrame(renderVisualizer);
+      requestAnimationFrame(animateTickerLoop);
+      triggerBootAnimation();
+    };
+  </script>
+</body>
+</html>
